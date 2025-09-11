@@ -6,7 +6,7 @@ ImageTransformService can be run as a script or a service. It accepts image file
 
 ### Prerequisites
 
-* Install Docker (https://www.docker.com/get-started/)
+* Install Docker ([instructions](https://www.docker.com/get-started/))
 * Create docker image
 
     ```
@@ -15,8 +15,8 @@ ImageTransformService can be run as a script or a service. It accepts image file
 
 or
 
-* Install Python3 (https://www.python.org/downloads/)
-* Install pip (https://pip.pypa.io/en/stable/installation/)
+* Install Python3 ([instructions](https://www.python.org/downloads/))
+* Install pip ([instructions](https://pip.pypa.io/en/stable/installation/))
 * Install dependencies:
     * Create a virtual environment (venv):
 
@@ -58,7 +58,7 @@ To start the gRPC server (on port 50051)
 python3 main.py --serve
 ```
 
-# Usage (Docker)
+## Usage (Docker)
 
 To start the gRPC server (on port 50051)
 
