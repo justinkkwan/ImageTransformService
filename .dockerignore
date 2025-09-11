@@ -1,0 +1,8 @@
+# .dockerignore
+README.md
+.idea
+.venv*
+generated
+images
+*.png
+*.jpg

@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+service ImageTransformService {
+  rpc traceImage(ImageBytes) returns (ImageBytes);
+  rpc quantizeImage(ImageBytes) returns (ImageBytes);
+}
+
+message ImageBytes {
+  bytes image = 1;
+}
+
+option java_package = "com.example.colourpalettebackend.generated.ImageTransformAPI";
+option java_multiple_files = true;

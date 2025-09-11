@@ -1,0 +1,176 @@
+from concurrent import futures
+
+import cv2
+import numpy
+import grpc
+
+import generated.image_transform_pb2_grpc
+from generated.image_transform_pb2 import ImageBytes
+from generated.image_transform_pb2_grpc import ImageTransformServiceServicer
+
+
+class ImageTransformService(ImageTransformServiceServicer):
+    def traceImage(self, request, context):
+        input_image_bytes = request.image
+        output_image_bytes = create_trace_image(input_image_bytes)
+
+        return ImageBytes(image=output_image_bytes)
+
+def create_trace_image(original_image: bytes) -> bytes:
+    cv_img = cv2.imdecode(numpy.frombuffer(original_image, numpy.uint8), cv2.IMREAD_COLOR)
+
+    #Greyscale
+    cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+
+    #Blur away small artifacts
+    cv_img = cv2.GaussianBlur(cv_img, (3, 3), 0)
+
+    #Option1: Canny (Create outline - white on black)
+    #cv_img = cv2.Canny(cv_img, threshold1=50, threshold2=150)
+
+    #Tidy up
+    #cv_img = cv2.morphologyEx(cv_img, cv2.MORPH_CLOSE, numpy.ones((5, 5), numpy.uint8))
+
+    #Invert to black on white
+    #cv_img = cv2.bitwise_not(cv_img)
+
+    #Option2: Decides if a pixel should be black based on difference compared to local weighted mean
+    cv_img = cv2.adaptiveThreshold(cv_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+
+    #Manually perform naive removal of artifacts
+    remove_blotches(cv_img)
+
+    _, png_array = cv2.imencode(".png", cv_img)
+
+    return numpy.array(png_array).tobytes()
+
+def remove_blotches(image: numpy.ndarray):
+    """
+    Modifies the given image, removing blotches.
+
+    :param image: a numpy.ndarray representing a cv2 image.
+    :type image: numpy.ndarray
+    """
+
+    num_rows, num_cols = image.shape
+
+    max_blotch_size = num_rows * num_cols * 0.00001
+
+    visited = numpy.ndarray(shape=image.shape, dtype=bool)
+    visited.fill(False)
+
+    for row_index, row in enumerate(image):
+        for col_index, pixel in enumerate(row):
+            if pixel == 0 and not visited[row_index, col_index]:
+                size, stretches = calculate_blotch((row_index, col_index), image, visited)
+
+                if size < max_blotch_size:
+                    for row, col, stretch_length in stretches:
+                        for index in range(col, col + stretch_length):
+                            image[row, index] = 255
+
+def calculate_blotch(point: tuple, image: numpy.ndarray, visited:numpy.ndarray, max_size=0) -> (int, list[tuple]):
+    row, col = point
+    num_rows, num_cols = image.shape
+
+    if image[point] != 0 or visited[point]:
+        return 0, []
+
+    #find the connected stretch/span of pixels in the row
+    left_most = col
+    while left_most >= 0 and image[row, left_most] == 0:
+        visited[row, left_most] = True
+        left_most -= 1
+
+    right_most = col
+    while right_most < num_cols and image[row, right_most] == 0:
+        visited[row, right_most] = True
+        right_most += 1
+
+    left_most += 1
+    right_most -= 1
+
+    stretch_length = right_most - left_most + 1
+
+    blotch_size = stretch_length
+    stretches = [(row, left_most, stretch_length)]
+
+    #search below, then above for more pixels
+    for index in range(left_most, right_most + 1):
+        if row < num_rows - 1:
+            sub_blotch_size, sub_stretches = calculate_blotch((row + 1, index), image, visited)
+            blotch_size += sub_blotch_size
+            stretches.extend(sub_stretches)
+
+        if row > 0:
+            sub_blotch_size, sub_stretches = calculate_blotch((row - 1, index), image, visited)
+            blotch_size += sub_blotch_size
+            stretches.extend(sub_stretches)
+
+    return blotch_size, stretches
+
+SERVER_PORT = 50051
+
+def serve():
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
+    generated.image_transform_pb2_grpc.add_ImageTransformServiceServicer_to_server(
+        ImageTransformService(),
+        server
+    )
+    server.add_insecure_port(f"[::]:{SERVER_PORT}")
+    server.start()
+    server.wait_for_termination()
+
+
+def find_file(search_term: str, matcher) -> str | None:
+    import os
+    search_term = search_term.lower()
+
+    for root, dirs, files in os.walk("."):
+        img_files = [file for file in files if file.lower().endswith(".png") or file.lower().endswith(".jpg")]
+
+        for img_file in img_files:
+            if matcher(img_file.lower(), search_term):
+                return os.path.join(root, img_file)
+
+    return None
+
+
+if __name__ == '__main__':
+    import argparse
+
+    arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument(
+        "-f",
+        "--file",
+        metavar="fileName",
+        required=False,
+        help="Provide a file name with --file."
+    )
+    arg_parser.add_argument(
+        "--serve",
+        action="store_true",
+        help=f"Run as gRPC server accepting requests on port {SERVER_PORT}."
+    )
+    args = arg_parser.parse_args()
+
+    if args.serve:
+        serve()
+
+    else:
+        file_name = args.file
+
+        if file_name is None:
+            file_name = input("Enter image file name (PNG or JPG): ")
+
+        exact_file_name = (find_file(file_name, lambda f1, f2 : f1 == f2 or f1[:-4] == f2) or # prioritize exact match
+                           find_file(file_name, lambda f1, f2 : f1.find(f2) != -1))
+
+        if exact_file_name is None:
+            raise Exception(f"No image named or containing '{file_name}' found!")
+
+        with open(exact_file_name, "rb") as file_bytes:
+            traced_image = create_trace_image(file_bytes.read())
+
+            with open("output.png", "wb") as output_file:
+                output_file.write(traced_image)
