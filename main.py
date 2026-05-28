@@ -65,9 +65,8 @@ def remove_blotches(image: numpy.ndarray):
                 size, stretches = calculate_blotch((row_index, col_index), image, visited)
 
                 if size < max_blotch_size:
-                    for row, col, stretch_length in stretches:
-                        for index in range(col, col + stretch_length):
-                            image[row, index] = 255
+                    for row, start, stop in stretches:
+                        image[row, start:stop+1] = 255
 
 def calculate_blotch(point: tuple, image: numpy.ndarray, visited:numpy.ndarray, max_size=0) -> (int, list[tuple]):
     row, col = point
@@ -78,41 +77,44 @@ def calculate_blotch(point: tuple, image: numpy.ndarray, visited:numpy.ndarray, 
 
     #find the connected stretch/span of pixels in the row
     left_most = col
+    right_most = col
+
     while left_most >= 0 and image[row, left_most] == 0:
-        visited[row, left_most] = True
         left_most -= 1
 
-    right_most = col
     while right_most < num_cols and image[row, right_most] == 0:
-        visited[row, right_most] = True
         right_most += 1
 
     left_most += 1
     right_most -= 1
 
+    visited[row, left_most:right_most+1] = True
+
     stretch_length = right_most - left_most + 1
 
     blotch_size = stretch_length
-    stretches = [(row, left_most, stretch_length)]
+    stretches = [(row, left_most, right_most)]
 
     #search below, then above for more pixels
     for index in range(left_most, right_most + 1):
         if row < num_rows - 1:
             sub_blotch_size, sub_stretches = calculate_blotch((row + 1, index), image, visited)
-            blotch_size += sub_blotch_size
-            stretches.extend(sub_stretches)
+            if sub_blotch_size > 0:
+                blotch_size += sub_blotch_size
+                stretches.extend(sub_stretches)
 
         if row > 0:
             sub_blotch_size, sub_stretches = calculate_blotch((row - 1, index), image, visited)
-            blotch_size += sub_blotch_size
-            stretches.extend(sub_stretches)
+            if sub_blotch_size > 0:
+                blotch_size += sub_blotch_size
+                stretches.extend(sub_stretches)
 
     return blotch_size, stretches
 
 SERVER_PORT = 50051
 
 def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=8), options=[("grpc.max_receive_message_length", 1024*1024*32), ("grpc.max_send_message_length", 1024*1024*32)])
     generated.image_transform_pb2_grpc.add_ImageTransformServiceServicer_to_server(
         ImageTransformService(),
         server
