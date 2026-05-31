@@ -3,6 +3,8 @@ from concurrent import futures
 import cv2
 import numpy
 import grpc
+from io import BytesIO
+import pillow_heif
 
 import generated.image_transform_pb2_grpc
 from generated.image_transform_pb2 import ImageBytes
@@ -18,6 +20,10 @@ class ImageTransformService(ImageTransformServiceServicer):
 
 def create_trace_image(original_image: bytes) -> bytes:
     cv_img = cv2.imdecode(numpy.frombuffer(original_image, numpy.uint8), cv2.IMREAD_COLOR)
+
+    if cv_img is None and original_image[4:8] == b"ftyp": #HEIC/HEIF files
+        heif_img = pillow_heif.open_heif(BytesIO(original_image), convert_hdr_to_8bit=False, bgr_mode=True)
+        cv_img = numpy.asarray(heif_img)
 
     #Greyscale
     cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
@@ -54,7 +60,7 @@ def remove_blotches(image: numpy.ndarray):
 
     num_rows, num_cols = image.shape
 
-    max_blotch_size = num_rows * num_cols * 0.00001
+    max_blotch_size = num_rows * num_cols * 0.00003
 
     visited = numpy.ndarray(shape=image.shape, dtype=bool)
     visited.fill(False)
@@ -68,7 +74,77 @@ def remove_blotches(image: numpy.ndarray):
                     for row, start, stop in stretches:
                         image[row, start:stop+1] = 255
 
-def calculate_blotch(point: tuple, image: numpy.ndarray, visited:numpy.ndarray, max_size=0) -> (int, list[tuple]):
+def calculate_blotch(staring_point: tuple, image: numpy.ndarray, visited:numpy.ndarray) -> (int, list[tuple]):
+    starting_row, starting_col = staring_point
+    num_rows, num_cols = image.shape
+    last_row = num_rows - 1
+    last_col = num_cols - 1
+
+    first_stretch = calculate_stretch(staring_point, image)
+    stretch_start, stretch_end = first_stretch
+
+    stretches = [(starting_row, stretch_start, stretch_end)]
+    total_size = stretch_end - stretch_start
+
+    visited[starting_row, stretch_start:stretch_end+1] = True
+
+    remainingWork = []
+
+    if starting_row > 0:
+        remainingWork.append((starting_row - 1, stretch_start, stretch_end))
+    if starting_row < last_row:
+        remainingWork.append((starting_row + 1, stretch_start, stretch_end))
+
+    while len(remainingWork) > 0:
+        # check where to search next
+        area = remainingWork.pop()
+        row, search_start, search_end = area
+
+        # calculate the intersecting stretches
+        col = search_start
+        while col <= search_end:
+            if image[row, col] == 0 and not visited[row, col]:
+                start, end = calculate_stretch((row, col), image)
+
+                stretches.append((row, start, end))
+                total_size += end - start
+                visited[row, start:end+1] = True
+
+                # add the segments of the rows directly above and below the current segment to the search space
+                if row > 0:
+                    remainingWork.append((row - 1, start, end))
+                if row < last_row:
+                    remainingWork.append((row + 1, start, end))
+
+                col = end + 1
+            else:
+                col += 1
+
+    return total_size, stretches
+
+def calculate_stretch(point: tuple, image: numpy.ndarray) -> tuple[int, int]:
+    """
+    Calculates the stretch of black pixels around a given point.
+    :param point: Point/pixel to calculate around
+    :param image: Image where the point/pixel lives
+    :return: Left-most and right-most columns reached from the point/pixel via black pixels.
+    """
+    row, col = point
+    image_row = image[row]
+
+    start = col
+    end = col
+
+    while start > 0 and image_row[start - 1] == 0:
+        start -= 1
+
+    cutoff = image.shape[1] - 1
+    while end < cutoff and image_row[end + 1] == 0:
+        end += 1
+
+    return start, end
+
+def calculate_blotch_recursive(point: tuple, image: numpy.ndarray, visited: numpy.ndarray) -> (int, list[tuple]):
     row, col = point
     num_rows, num_cols = image.shape
 
@@ -98,13 +174,13 @@ def calculate_blotch(point: tuple, image: numpy.ndarray, visited:numpy.ndarray, 
     #search below, then above for more pixels
     for index in range(left_most, right_most + 1):
         if row < num_rows - 1:
-            sub_blotch_size, sub_stretches = calculate_blotch((row + 1, index), image, visited)
+            sub_blotch_size, sub_stretches = calculate_blotch_recursive((row + 1, index), image, visited)
             if sub_blotch_size > 0:
                 blotch_size += sub_blotch_size
                 stretches.extend(sub_stretches)
 
         if row > 0:
-            sub_blotch_size, sub_stretches = calculate_blotch((row - 1, index), image, visited)
+            sub_blotch_size, sub_stretches = calculate_blotch_recursive((row - 1, index), image, visited)
             if sub_blotch_size > 0:
                 blotch_size += sub_blotch_size
                 stretches.extend(sub_stretches)
@@ -129,7 +205,7 @@ def find_file(search_term: str, matcher) -> str | None:
     search_term = search_term.lower()
 
     for root, dirs, files in os.walk("."):
-        img_files = [file for file in files if file.lower().endswith(".png") or file.lower().endswith(".jpg")]
+        img_files = [file for file in files if file.lower().endswith(".png") or file.lower().endswith(".jpg") or file.lower().endswith(".webp") or file.lower().endswith(".heic")]
 
         for img_file in img_files:
             if matcher(img_file.lower(), search_term):
