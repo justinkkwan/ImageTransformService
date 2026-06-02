@@ -1,5 +1,6 @@
 from concurrent import futures
 
+import math
 import cv2
 import numpy
 import grpc
@@ -41,7 +42,10 @@ def create_trace_image(original_image: bytes) -> bytes:
     #cv_img = cv2.bitwise_not(cv_img)
 
     #Option2: Decides if a pixel should be black based on difference compared to local weighted mean
-    cv_img = cv2.adaptiveThreshold(cv_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    shortest_side = min(*cv_img.shape)
+    block_size = math.trunc(shortest_side / 150)
+    block_size = max(3, block_size if block_size % 2 == 1 else block_size + 1) #adhere to algorithm requirements
+    cv_img = cv2.adaptiveThreshold(cv_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, 2)
 
     #Manually perform naive removal of artifacts
     remove_blotches(cv_img)
